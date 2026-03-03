@@ -55,6 +55,21 @@ async def offer(request):
             await pc.close()
             pcs.discard(pc)
 
+    @pc.on("icegatheringstatechange")
+    async def on_icegatheringstatechange():
+        log_info("ICE gathering state: %s", pc.iceGatheringState)
+
+    @pc.on("icecandidate")
+    async def on_icecandidate(candidate):
+        log_info("ICE candidate: %s", candidate)
+        if candidate:
+            await ws.send_str(json.dumps({
+                "type": "candidate",
+                "candidate": candidate.candidate,
+                "sdpMid": candidate.sdpMid,
+                "sdpMLineIndex": candidate.sdpMLineIndex
+            }))
+
     @pc.on("track")
     def on_track(track):
         log_info("Track %s received", track.kind)
@@ -70,13 +85,15 @@ async def offer(request):
             pcs.discard(pc)
 
     # handle offer
-    await pc.setRemoteDescription(offer)
-    
-    # send video
+    # add tracks BEFORE setting remote description
     if player.video:
         pc.addTrack(player.video)
+        log_info("Added video track")
     if player.audio:
         pc.addTrack(player.audio)
+        log_info("Added audio track")
+
+    await pc.setRemoteDescription(offer)
 
     # send answer
     answer = await pc.createAnswer()
@@ -112,20 +129,42 @@ async def websocket_handler(request):
             await pc.close()
             pcs.discard(pc)
 
+    @pc.on("icegatheringstatechange")
+    async def on_icegatheringstatechange():
+        log_info("ICE gathering state: %s", pc.iceGatheringState)
+
+    @pc.on("icecandidate")
+    async def on_icecandidate(candidate):
+        log_info("ICE candidate: %s", candidate)
+        if candidate:
+            await ws.send_str(json.dumps({
+                "type": "candidate",
+                "candidate": candidate.candidate,
+                "sdpMid": candidate.sdpMid,
+                "sdpMLineIndex": candidate.sdpMLineIndex
+            }))
+
     async for msg in ws:
         if msg.type == aiohttp.WSMsgType.TEXT:
             data = json.loads(msg.data)
 
             if data.get("type") == "offer":
                 offer = RTCSessionDescription(sdp=data["sdp"], type=data["type"])
-                await pc.setRemoteDescription(offer)
 
-                # send video
+                log_info("Received offer, adding local tracks first")
+
+                # send video/audio BEFORE setting remote description
                 if player.video:
                     pc.addTrack(player.video)
+                    log_info("Added video track")
                 if player.audio:
                     pc.addTrack(player.audio)
+                    log_info("Added audio track")
 
+                # now set remote description
+                await pc.setRemoteDescription(offer)
+
+                # create and set local description
                 answer = await pc.createAnswer()
                 await pc.setLocalDescription(answer)
 
