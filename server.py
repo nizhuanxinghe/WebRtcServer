@@ -1,30 +1,36 @@
-import argparse
 import asyncio
 import json
 import logging
 import os
-import ssl
 import uuid
 
 import aiohttp
 from aiohttp import web
-from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
-from aiortc.contrib.media import MediaPlayer, MediaRelay
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
+from aiortc.contrib.media import MediaPlayer
+from aiortc.sdp import candidate_from_sdp, candidate_to_sdp
 import socket
 
 ROOT = os.path.dirname(__file__)
 
 logger = logging.getLogger("pc")
 pcs = set()
-relay = MediaRelay()
 
 async def index(request):
-    content = open(os.path.join(ROOT, "index.html"), "r").read()
-    return web.Response(content_type="text/html", text=content)
+    try:
+        with open(os.path.join(ROOT, "index.html"), "r") as f:
+            content = f.read()
+        return web.Response(content_type="text/html", text=content)
+    except FileNotFoundError:
+        return web.Response(status=404, text="index.html not found")
 
 async def javascript(request):
-    content = open(os.path.join(ROOT, "client.js"), "r").read()
-    return web.Response(content_type="application/javascript", text=content)
+    try:
+        with open(os.path.join(ROOT, "client.js"), "r") as f:
+            content = f.read()
+        return web.Response(content_type="application/javascript", text=content)
+    except FileNotFoundError:
+        return web.Response(status=404, text="client.js not found")
 
 async def offer(request):
     params = await request.json()
@@ -40,7 +46,12 @@ async def offer(request):
     log_info("Created for %s", request.remote)
 
     # prepare local media
-    player = MediaPlayer(os.path.join(ROOT, "夏日初见.mov"))
+    media_path = os.path.join(ROOT, "夏日初见.mov")
+    player = None
+    if os.path.exists(media_path):
+        player = MediaPlayer(media_path)
+    else:
+        log_info("Media file not found at %s, proceeding without local media", media_path)
     
     @pc.on("datachannel")
     def on_datachannel(channel):
@@ -55,20 +66,10 @@ async def offer(request):
                 else:
                     channel.send("echo: " + message)
 
-    data_channel = pc.createDataChannel("data")
-    @data_channel.on("open")
-    def on_data_channel_open():
-        log_info("DataChannel opened: %s", data_channel.label)
-        data_channel.send("Hello from server!")
-
-    @data_channel.on("message")
-    def on_data_channel_message(message):
-        log_info("DataChannel message received: %s", message)
-
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
         log_info("Connection state is %s", pc.connectionState)
-        if pc.connectionState == "failed":
+        if pc.connectionState in ("failed", "closed"):
             await pc.close()
             pcs.discard(pc)
 
@@ -79,25 +80,21 @@ async def offer(request):
     @pc.on("track")
     def on_track(track):
         log_info("Track %s received", track.kind)
-        if track.kind == "audio":
-            pc.addTrack(player.audio)
-        elif track.kind == "video":
-            pc.addTrack(player.video)
 
         @track.on("ended")
         async def on_ended():
             log_info("Track %s ended", track.kind)
-            await pc.close()
-            pcs.discard(pc)
+            # Do not force-close the whole PeerConnection on single track end
 
     # handle offer
     # add tracks BEFORE setting remote description
-    if player.video:
-        pc.addTrack(player.video)
-        log_info("Added video track")
-    if player.audio:
-        pc.addTrack(player.audio)
-        log_info("Added audio track")
+    if player:
+        if player.video:
+            pc.addTrack(player.video)
+            log_info("Added video track")
+        if player.audio:
+            pc.addTrack(player.audio)
+            log_info("Added audio track")
 
     await pc.setRemoteDescription(offer)
 
@@ -126,12 +123,17 @@ async def websocket_handler(request):
     log_info("WebSocket connected from %s", request.remote)
 
     # prepare local media
-    player = MediaPlayer(os.path.join(ROOT, "夏日初见.mov"))
+    media_path = os.path.join(ROOT, "夏日初见.mov")
+    player = None
+    if os.path.exists(media_path):
+        player = MediaPlayer(media_path)
+    else:
+        log_info("Media file not found at %s, proceeding without local media", media_path)
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
         log_info("Connection state is %s", pc.connectionState)
-        if pc.connectionState == "failed":
+        if pc.connectionState in ("failed", "closed"):
             await pc.close()
             pcs.discard(pc)
 
@@ -145,7 +147,7 @@ async def websocket_handler(request):
         if candidate:
             await ws.send_str(json.dumps({
                 "type": "candidate",
-                "candidate": candidate.candidate,
+                "candidate": "candidate:" + candidate_to_sdp(candidate),
                 "sdpMid": candidate.sdpMid,
                 "sdpMLineIndex": candidate.sdpMLineIndex
             }))
@@ -162,6 +164,7 @@ async def websocket_handler(request):
                     channel.send("pong" + message[4:])
                 else:
                     channel.send("echo: " + message)
+            log_info("Send message to client: %s", message)
 
     async for msg in ws:
         if msg.type == aiohttp.WSMsgType.TEXT:
@@ -173,27 +176,16 @@ async def websocket_handler(request):
                 log_info("Received offer, adding local tracks first")
 
                 # send video/audio BEFORE setting remote description
-                if player.video:
-                    pc.addTrack(player.video)
-                    log_info("Added video track")
-                if player.audio:
-                    pc.addTrack(player.audio)
-                    log_info("Added audio track")
+                if player:
+                    if player.video:
+                        pc.addTrack(player.video)
+                        log_info("Added video track")
+                    if player.audio:
+                        pc.addTrack(player.audio)
+                        log_info("Added audio track")
 
                 # now set remote description
                 await pc.setRemoteDescription(offer)
-
-                # create data channel for sending data
-                data_channel = pc.createDataChannel("data")
-                @data_channel.on("open")
-                def on_data_channel_open():
-                    log_info("DataChannel opened: %s", data_channel.label)
-                    data_channel.send("Hello from server via WebSocket!")
-
-                @data_channel.on("message")
-                def on_data_channel_message(message):
-                    log_info("DataChannel message received: %s", message)
-                    data_channel.send("echo: " + str(message))
 
                 # create and set local description
                 answer = await pc.createAnswer()
@@ -211,11 +203,15 @@ async def websocket_handler(request):
                 sdp_mline_index = data.get("sdpMLineIndex") or data.get("label")
                 
                 if candidate_info:
-                    candidate = RTCIceCandidate(
-                        candidate=candidate_info,
-                        sdpMid=sdp_mid,
-                        sdpMLineIndex=sdp_mline_index
-                    )
+                    cand_str = candidate_info
+                    if cand_str.startswith("candidate:"):
+                        cand_str = cand_str.split(":", 1)[1]
+                    candidate = candidate_from_sdp(cand_str)
+                    candidate.sdpMid = sdp_mid
+                    try:
+                        candidate.sdpMLineIndex = int(sdp_mline_index) if sdp_mline_index is not None else None
+                    except Exception:
+                        candidate.sdpMLineIndex = sdp_mline_index
                     await pc.addIceCandidate(candidate)
     
     # cleanup
@@ -250,7 +246,8 @@ if __name__ == "__main__":
             return "127.0.0.1"
 
     ip = get_local_ip()
-    print(f"Server started at http://{ip}:8080")
-    print(f"Signaling URL (HTTP): http://{ip}:8080/offer")
-    print(f"Signaling URL (WebSocket): ws://{ip}:8080/ws")
-    web.run_app(app, access_log=None, host="0.0.0.0", port=8080)
+    port = int(os.environ.get("PORT", "8080"))
+    print(f"Server started at http://{ip}:{port}")
+    print(f"Signaling URL (HTTP): http://{ip}:{port}/offer")
+    print(f"Signaling URL (WebSocket): ws://{ip}:{port}/ws")
+    web.run_app(app, access_log=None, host="0.0.0.0", port=port)
