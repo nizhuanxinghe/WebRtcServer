@@ -10,6 +10,7 @@ import aiohttp
 from aiohttp import web
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
 from aiortc.contrib.media import MediaPlayer, MediaRelay
+import socket
 
 ROOT = os.path.dirname(__file__)
 
@@ -43,10 +44,26 @@ async def offer(request):
     
     @pc.on("datachannel")
     def on_datachannel(channel):
+        log_info("DataChannel received: %s", channel.label)
+
         @channel.on("message")
         def on_message(message):
-            if isinstance(message, str) and message.startswith("ping"):
-                channel.send("pong" + message[4:])
+            log_info("Received message: %s", message)
+            if isinstance(message, str):
+                if message.startswith("ping"):
+                    channel.send("pong" + message[4:])
+                else:
+                    channel.send("echo: " + message)
+
+    data_channel = pc.createDataChannel("data")
+    @data_channel.on("open")
+    def on_data_channel_open():
+        log_info("DataChannel opened: %s", data_channel.label)
+        data_channel.send("Hello from server!")
+
+    @data_channel.on("message")
+    def on_data_channel_message(message):
+        log_info("DataChannel message received: %s", message)
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
@@ -58,17 +75,6 @@ async def offer(request):
     @pc.on("icegatheringstatechange")
     async def on_icegatheringstatechange():
         log_info("ICE gathering state: %s", pc.iceGatheringState)
-
-    @pc.on("icecandidate")
-    async def on_icecandidate(candidate):
-        log_info("ICE candidate: %s", candidate)
-        if candidate:
-            await ws.send_str(json.dumps({
-                "type": "candidate",
-                "candidate": candidate.candidate,
-                "sdpMid": candidate.sdpMid,
-                "sdpMLineIndex": candidate.sdpMLineIndex
-            }))
 
     @pc.on("track")
     def on_track(track):
@@ -144,6 +150,19 @@ async def websocket_handler(request):
                 "sdpMLineIndex": candidate.sdpMLineIndex
             }))
 
+    @pc.on("datachannel")
+    def on_datachannel(channel):
+        log_info("DataChannel received: %s", channel.label)
+
+        @channel.on("message")
+        def on_message(message):
+            log_info("Received message from client: %s", message)
+            if isinstance(message, str):
+                if message.startswith("ping"):
+                    channel.send("pong" + message[4:])
+                else:
+                    channel.send("echo: " + message)
+
     async for msg in ws:
         if msg.type == aiohttp.WSMsgType.TEXT:
             data = json.loads(msg.data)
@@ -163,6 +182,18 @@ async def websocket_handler(request):
 
                 # now set remote description
                 await pc.setRemoteDescription(offer)
+
+                # create data channel for sending data
+                data_channel = pc.createDataChannel("data")
+                @data_channel.on("open")
+                def on_data_channel_open():
+                    log_info("DataChannel opened: %s", data_channel.label)
+                    data_channel.send("Hello from server via WebSocket!")
+
+                @data_channel.on("message")
+                def on_data_channel_message(message):
+                    log_info("DataChannel message received: %s", message)
+                    data_channel.send("echo: " + str(message))
 
                 # create and set local description
                 answer = await pc.createAnswer()
@@ -207,7 +238,7 @@ if __name__ == "__main__":
     app.router.add_get("/client.js", javascript)
     app.router.add_post("/offer", offer)
     app.router.add_get("/ws", websocket_handler)
-    import socket
+
     def get_local_ip():
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

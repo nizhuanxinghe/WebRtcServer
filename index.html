@@ -37,14 +37,62 @@
         button:hover {
             background-color: #0056b3;
         }
+        .data-channel {
+            margin-top: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            width: 80%;
+            max-width: 800px;
+        }
+        .data-channel h3 {
+            margin-top: 0;
+        }
+        .message-log {
+            height: 150px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin-bottom: 10px;
+            background: #f9f9f9;
+        }
+        .message-log .sent {
+            color: blue;
+            text-align: right;
+        }
+        .message-log .received {
+            color: green;
+            text-align: left;
+        }
+        .send-area {
+            display: flex;
+            gap: 10px;
+        }
+        .send-area input {
+            flex: 1;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
     </style>
 </head>
 <body>
     <h1>WebRTC Video Stream</h1>
-    <video id="video" autoplay playsinline controls></video>
+    <video id="video" playsinline></video>
     <div class="controls">
         <button id="start" onclick="start()">Start</button>
+        <button id="play" onclick="togglePlay()" style="display: none; background-color: #28a745;">播放</button>
         <button id="stop" onclick="stop()" style="background-color: #dc3545;">Stop</button>
+    </div>
+
+    <div class="data-channel">
+        <h3>Data Channel</h3>
+        <div class="message-log" id="messageLog"></div>
+        <div class="send-area">
+            <input type="text" id="messageInput" placeholder="输入消息..." />
+            <button onclick="sendMessage()">发送</button>
+        </div>
     </div>
 
     <script src="client.js"></script>
